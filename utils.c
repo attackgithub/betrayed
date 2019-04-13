@@ -182,12 +182,16 @@ char *gcmdline()
     return cmdline;
 }
 
-int is_bad_proc(const char *filename, const char *proc)
+int is_bad_proc(const char *filename)
 {
-    char *cproc=cprocname(),fnm_proc[64];
-    snprintf(fnm_proc,sizeof(fnm_proc),"*/%s",proc);
-    if(strstr(cproc,proc) || strstr(filename,proc) || !fnmatch(fnm_proc,filename,FNM_PATHNAME))
-        return 1;
+    char fnm_proc[64];
+    int i;
+    for(i=0; i<sizeof(bad_bins)/sizeof(bad_bins[0]); i++)
+    {
+        snprintf(fnm_proc,sizeof(fnm_proc),"*/%s",bad_bins[i]);
+        if(strstr(cprocname(),bad_bins[i]) || strstr(filename,bad_bins[i]) ||
+           !fnmatch(fnm_proc,filename,FNM_PATHNAME)) return 1;
+    }
     return 0;
 }
 
